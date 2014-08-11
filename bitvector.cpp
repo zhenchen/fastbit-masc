@@ -314,7 +314,7 @@ void ibis::bitvector::compress_masc()
 	}
     };
 	
-	 array_t<word_t> mascArray(m_vec.size() + 1,0);
+	array_t<word_t> mascArray(m_vec.size() + 1,0);
 
 	bitvector * masc_vec = new bitvector(mascArray);
 	xrun currentWah, currentMasc;
@@ -382,7 +382,7 @@ void ibis::bitvector::compress_masc()
 		else //have literal
 		{
 			int tmpPos;
-			for(tmpPos = 0; tmpPos<30; tmpPos++) //varies based on big-end or small-end
+			for(tmpPos = 30; tmpPos>=0; tmpPos--) //varies based on big-end or small-end
 			{
 				if(currentWah.it[tmpPos] == 0)
 				{
@@ -495,68 +495,6 @@ void ibis::bitvector::compress_compax() {
     last.it = m_vec.begin();
 	beforeLast.it = m_vec.begin();
 
-	//predeal, merge all fills. supposed to be finished by compress(), so do not need to repeat it.
-/*	for (++ current.it; current.it < m_vec.end(); ++ current.it) {
-	current.decode();
-	last.decode();
-	beforeLast.decode();
-	if (last.isFill) { // last word was a fill word
-	    if (current.isFill) { // current word is a fill word
-		if (current.fillBit == last.fillBit) { // same type of fill
-		    *(last.it) += current.nWords;
-		}
-		else { // different types of fills, move last foward by one
-		    ++ last.it;
-		    *(last.it) = *(current.it);
-		}
-	    }
-	    else if ((last.fillBit == 0 && *(current.it) == 0) ||
-		     (last.fillBit != 0 && *(current.it) == ALLONES)){
-		// increase the last fill by 1 word
-		++ *(last.it);
-	    }
-	    else  { // move last forward by one
-		++ last.it;
-		*(last.it) = *(current.it);
-	    }
-	}
-	else if (current.isFill) {
-	    // last word was a literal word, current word is a fill word
-	    if ((current.fillBit == 0 && *(last.it) == 0) ||
-		(current.fillBit != 0 && *(last.it) == ALLONES)) {
-		// change the last word into a fill word
-		*(last.it) = *(current.it) + 1;
-	    }
-	    else { // move last forward by one
-		++ last.it;
-		last.isFill = true;
-		*(last.it) = *(current.it);
-	    }
-	}
-	else if (*(last.it) == *(current.it)) {
-	    // both last word and current word are literal words and are
-	    // the same
-	    if (*(current.it) == 0) { // make a 2-word 0-fill
-		*(last.it) = HEADER0 | 2;
-	    }
-	    else if (*(current.it) == ALLONES) { // make a 2-word 1-fill
-		*(last.it) = HEADER1 | 2;
-	    }
-	    else { // move last forward
-		++ last.it;
-		*(last.it) = *(current.it);
-	    }
-	}
-	else { // move last forward one word
-	    ++ last.it;
-	    *(last.it) = *(current.it);
-	}
-    }
-    ++ last.it;
-    if (last.it < m_vec.end()) { // reduce the size of m_vec
-	m_vec.erase(last.it, m_vec.end());
-    }
-*/	
 	//next step, find all LFL/FLF
     for (++ current.it; current.it < m_vec.end(); ++ current.it) {
 	current.decode();
@@ -873,7 +811,117 @@ void ibis::bitvector::compress_compax() {
 
 } // ibis::bitvector::compress
 
-// Convert stored compax bitvectors into wah for further treatment. (Wen,July 9 2014)
+
+void ibis::bitvector::decompress_masc()
+{
+	struct xrun {
+	bool fillType;
+	bool isCarried;	
+	word_t bitCounter;
+	word_t carrierCounter;
+	array_t<word_t>::iterator it;
+	
+	xrun() : fillType(false), isCarried(false), bitCounter(0), carrierCounter(0),it(0) {};
+	void decode() {
+		fillType = (*it > ALLONES);
+	    isCarried = (*it >= 0xc0000000);
+		if(fillType){ //1-fill
+			bitCounter = (*it & 0x7fffffff);
+		}
+		else{ //0-fill
+			if(isCarried){ // Carried
+				carrierCounter = (*it & 0x0000001f);
+				bitCounter = ((*it & 0x3fffffe0) >> 5);
+			}
+			else{ // Not Carried
+				carrierCounter = (*it & 0x3fffffff);
+			}
+		}
+	   }
+	};
+
+	xrun current;
+	int totalBits = 0;
+	current.it = m_vec.begin();
+	for(current.it;current.it<m_vec.end();current.it++){
+		current.decode();
+		if(current.isCarried){
+			totalBits += current.carrierCounter;
+		}
+		totalBits += current.bitCounter;
+	}
+	
+	int totalWords = totalBits/31;
+	int currentBits = 0;
+	int bitPos = 0;
+	int wordPos = 0;
+	int tmp;
+	array_t<word_t> tmp_array(totalWords+1,0);
+	bitvector * tmp_vec = new bitvector(tmp_array);
+
+	current.it = m_vec.begin();
+	for(current.it;current.it<m_vec.end();current.it++){
+		current.decode();
+		if(current.fillType){ //1-fill
+			currentBits = current.bitCounter;
+			for(tmp=0;tmp<currentBits;tmp++)
+			{
+				if(bitPos==31){//this one is full, next word;
+					wordPos++;
+					bitPos = 0;
+					tmp_vec->m_vec[wordPos] = 1;
+				}
+				else{ //not full
+					bitPos++;
+					tmp_vec->m_vec[wordPos] = (tmp_vec->m_vec[wordPos] << 1);
+					tmp_vec->m_vec[wordPos] ++;		
+				}
+			}
+		}
+		else if(current.carrierCounter){ //0-fill, carried
+			currentBits = current.bitCounter;
+			for(tmp=0;tmp<currentBits;tmp++)
+			{
+				if(bitPos==31){//this one is full, next word;
+					wordPos++;
+					bitPos = 0;
+					tmp_vec->m_vec[wordPos] = 0;
+				}
+				else{ //not full
+				bitPos++;}
+			}
+			currentBits = current.carrierCounter;
+			for(tmp=0;tmp<currentBits;tmp++)
+			{
+				if(bitPos==31){//this one is full, next word;
+					wordPos++;
+					bitPos = 0;
+					tmp_vec->m_vec[wordPos] = 1;
+				}
+				else{ //not full
+					tmp_vec->m_vec[wordPos] = (tmp_vec->m_vec[wordPos] << 1);
+					tmp_vec->m_vec[wordPos] ++;		
+				}
+			}
+		}
+		else{
+			currentBits = current.bitCounter;
+			for(tmp=0;tmp<currentBits;tmp++)
+			{
+				if(bitPos==31){//this one is full, next word;
+					wordPos++;
+					bitPos = 0;
+					tmp_vec->m_vec[wordPos] = 0;
+				}
+				else{ //not full
+				bitPos++;}
+			}
+		}
+	}
+	m_vec.swap(tmp_vec->m_vec);
+	compress();
+}
+
 
 void ibis::bitvector::decompress_compax()
 {
